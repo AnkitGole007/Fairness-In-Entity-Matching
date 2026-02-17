@@ -3,3 +3,45 @@ Documents/
 .env
 .claude/
 .vscode/
+
+# Ditto repository - Large datasets and data files
+ditto/data/
+ditto/output/
+ditto/input/
+ditto/results_ditto/
+ditto/checkpoints/
+ditto/logs/
+
+# Python cache and compiled files
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/*.so
+
+# PyTorch model files
+**/*.pt
+**/*.pth
+**/*.pkl
+**/*.pickle
+
+# TensorBoard logs
+**/.tensorboard/
+**/runs/
+
+# Large data files
+**/*.txt
+!ditto/README.md
+!ditto/requirements.txt
+**/*.csv
+**/*.tsv
+**/*.jsonl
+
+# Jupyter Notebook
+**/.ipynb_checkpoints
+
+# OS generated files
+**/.DS_Store
+**/Thumbs.db
+**/*.tmp
+**/*.temp
+**/*.log
