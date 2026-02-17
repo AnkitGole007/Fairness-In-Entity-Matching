@@ -1,3 +1,5 @@
 Documents/
 .venv/
 .env
+.claude/
+.vscode/
