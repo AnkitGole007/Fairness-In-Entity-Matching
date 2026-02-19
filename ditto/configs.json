@@ -902,4 +902,12 @@
   "trainset": "data/wdc/cameras/title_description_brand_specTableContent/train.txt.xlarge",
   "validset": "data/wdc/cameras/title_description_brand_specTableContent/valid.txt.xlarge",
   "testset": "data/wdc/cameras/title_description_brand_specTableContent/test.txt"
+},
+{
+  "name": "Compas",
+  "task_type": "classification",
+  "vocab": ["0", "1"],
+  "trainset": "data/Compas/train.txt",
+  "validset": "data/Compas/valid.txt",
+  "testset": "data/Compas/test.txt"
 }]
