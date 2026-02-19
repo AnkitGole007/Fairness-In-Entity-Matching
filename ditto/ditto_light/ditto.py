@@ -13,7 +13,12 @@ from .dataset import DittoDataset
 from torch.utils import data
 from transformers import AutoModel, AdamW, get_linear_schedule_with_warmup
 from tensorboardX import SummaryWriter
-from apex import amp
+try:
+    from apex import amp
+    HAS_APEX = True
+except ImportError:
+    HAS_APEX = False
+    print("Warning: APEX not found. FP16 training will be disabled.")
 
 lm_mp = {'roberta': 'roberta-base',
          'distilbert': 'distilbert-base-uncased'}
@@ -132,7 +137,7 @@ def train_step(train_iter, model, optimizer, scheduler, hp):
 
         loss = criterion(prediction, y.to(model.device))
 
-        if hp.fp16:
+        if hp.fp16 and HAS_APEX:
             with amp.scale_loss(loss, optimizer) as scaled_loss:
                 scaled_loss.backward()
         else:
@@ -184,8 +189,10 @@ def train(trainset, validset, testset, run_tag, hp):
     model = model.cuda()
     optimizer = AdamW(model.parameters(), lr=hp.lr)
 
-    if hp.fp16:
+    if hp.fp16 and HAS_APEX:
         model, optimizer = amp.initialize(model, optimizer, opt_level='O2')
+    elif hp.fp16 and not HAS_APEX:
+        print("Warning: FP16 requested but APEX not available. Using FP32.")
     num_steps = (len(trainset) // hp.batch_size) * hp.n_epochs
     scheduler = get_linear_schedule_with_warmup(optimizer,
                                                 num_warmup_steps=0,
