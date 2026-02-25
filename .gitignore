@@ -3,6 +3,7 @@ Documents/
 .env
 .claude/
 .vscode/
+.agent/
 
 # Ditto repository - Large datasets and data files
 ditto/data/
@@ -11,6 +12,8 @@ ditto/input/
 ditto/results_ditto/
 ditto/checkpoints/
 ditto/logs/
+checkpoints/
+logs/
 
 # Python cache and compiled files
 **/__pycache__/
