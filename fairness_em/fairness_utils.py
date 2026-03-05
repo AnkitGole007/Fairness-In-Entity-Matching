@@ -48,6 +48,7 @@ class FairnessEMATracker:
         self.beta = beta
         self.group_soft_tp = {}  # group_name -> EMA of soft TP
         self.group_soft_fp = {}  # group_name -> EMA of soft FP
+        self.group_mean_prob = {}  # group_name -> EMA of mean prediction prob (for DP)
         self.group_counts = {}   # group_name -> total samples seen
         self.initialized = {}    # group_name -> bool
 
@@ -82,12 +83,14 @@ class FairnessEMATracker:
             batch_soft_tp = (group_probs * group_labels).sum().item()
             batch_soft_fp = (group_probs * (1 - group_labels)).sum().item()
             batch_count = len(indices)
+            batch_mean_prob = group_probs.mean().item()  # For Demographic Parity
 
             # Update EMA
             if group_name not in self.initialized or not self.initialized[group_name]:
                 # First time seeing this group - initialize
                 self.group_soft_tp[group_name] = batch_soft_tp
                 self.group_soft_fp[group_name] = batch_soft_fp
+                self.group_mean_prob[group_name] = batch_mean_prob
                 self.group_counts[group_name] = batch_count
                 self.initialized[group_name] = True
             else:
@@ -99,6 +102,10 @@ class FairnessEMATracker:
                 self.group_soft_fp[group_name] = (
                     self.beta * self.group_soft_fp[group_name] +
                     (1 - self.beta) * batch_soft_fp
+                )
+                self.group_mean_prob[group_name] = (
+                    self.beta * self.group_mean_prob[group_name] +
+                    (1 - self.beta) * batch_mean_prob
                 )
                 self.group_counts[group_name] += batch_count
 
@@ -128,6 +135,26 @@ class FairnessEMATracker:
 
         return max(ppvp_values) - min(ppvp_values)
 
+    def get_dp_disparity(self) -> float:
+        """
+        Calculate Demographic Parity (DP) disparity from EMA statistics.
+
+        DP measures the difference in mean prediction probability across groups.
+        Unlike PPVP, DP is non-degenerate even when predictions are all-negative.
+
+        Returns:
+            Disparity value (max mean_prob - min mean_prob), or 0.0 if < 2 groups
+        """
+        mean_probs = []
+        for group_name in self.initialized:
+            if self.initialized[group_name] and group_name in self.group_mean_prob:
+                mean_probs.append(self.group_mean_prob[group_name])
+
+        if len(mean_probs) < 2:
+            return 0.0
+
+        return max(mean_probs) - min(mean_probs)
+
     def get_group_ppvp(self) -> Dict[str, float]:
         """Get PPVP for each tracked group."""
         result = {}
@@ -146,6 +173,7 @@ class FairnessEMATracker:
         """Reset all accumulated statistics."""
         self.group_soft_tp = {}
         self.group_soft_fp = {}
+        self.group_mean_prob = {}
         self.group_counts = {}
         self.initialized = {}
 
@@ -156,7 +184,9 @@ class FairnessEMATracker:
             'total_samples': sum(self.group_counts.values()),
             'group_counts': dict(self.group_counts),
             'group_ppvp': self.get_group_ppvp(),
-            'disparity': self.get_ppvp_disparity()
+            'ppvp_disparity': self.get_ppvp_disparity(),
+            'dp_disparity': self.get_dp_disparity(),
+            'group_mean_prob': dict(self.group_mean_prob)
         }
 
 
@@ -372,32 +402,26 @@ def calculate_fairness_loss_with_ema(logits: torch.Tensor, labels: torch.Tensor,
     # Update EMA tracker with current batch (non-differentiable update)
     ema_tracker.update(probs, labels, sensitive_attrs)
 
-    # Get stable disparity from accumulated statistics
-    ema_disparity = ema_tracker.get_ppvp_disparity()
+    # Get stable Demographic Parity disparity from accumulated statistics
+    # DP is used instead of PPVP because DP is non-degenerate in the
+    # all-negative-prediction regime (PPVP becomes 0/0 when soft_tp ~ 0)
+    ema_disparity = ema_tracker.get_dp_disparity()
 
-    # Create differentiable loss:
-    # - Use EMA disparity as the loss magnitude (stable, non-differentiable)
-    # - Multiply by differentiable component for gradient flow
-    # - The gradient direction comes from how predictions affect soft PPVP
+    # Calculate batch-level DP disparity for gradient direction
+    batch_disparity = calculate_dp_disparity_differentiable(probs, sensitive_attrs)
 
-    if ema_disparity < 1e-8:
-        # No disparity - return differentiable zero
+    # Create differentiable loss combining EMA stability with batch gradients
+    if ema_disparity < 1e-8 and batch_disparity.item() < 1e-8:
+        # No disparity at all - return differentiable zero
         return probs.sum() * 0.0
 
-    # Calculate batch-level disparity for gradient direction
-    batch_disparity = calculate_ppvp_disparity_differentiable(probs, labels, sensitive_attrs)
-
-    # If batch disparity is zero but EMA disparity exists, use EMA value
-    # with a small gradient signal from the probs
     if batch_disparity.item() < 1e-8:
-        # Use EMA disparity value but ensure gradient flows
-        # Scale by mean probability to maintain gradient connection
+        # EMA shows disparity but batch doesn't - use EMA value with gradient flow
         return torch.tensor(ema_disparity, device=probs.device, dtype=probs.dtype) * (probs.mean() / probs.mean().detach())
     else:
         # Blend batch and EMA disparity for stability
-        # Use batch for gradient direction, scale toward EMA value
         scale_factor = ema_disparity / (batch_disparity.item() + 1e-8)
-        return batch_disparity * min(scale_factor, 2.0)  # Cap scaling to prevent instability
+        return batch_disparity * min(scale_factor, 2.0)
 
 
 def calculate_ppvp_disparity_differentiable(probs: torch.Tensor, labels: torch.Tensor,
@@ -465,6 +489,44 @@ def calculate_ppvp_disparity_differentiable(probs: torch.Tensor, labels: torch.T
     return disparity
 
 
+def calculate_dp_disparity_differentiable(probs: torch.Tensor,
+                                          sensitive_attrs: List[Tuple[str, str]]) -> torch.Tensor:
+    """
+    Differentiable Demographic Parity (DP) disparity for gradient flow.
+
+    DP measures the difference in mean prediction probability across groups.
+    Unlike PPVP, DP is non-degenerate even when the model predicts all non-matches,
+    because it only depends on mean prediction probability, not precision.
+
+    Args:
+        probs: Prediction probabilities for class 1 [batch_size]
+        sensitive_attrs: List of (left_attr, right_attr) tuples
+
+    Returns:
+        Differentiable disparity tensor
+    """
+    group_indices = defaultdict(list)
+
+    for i, (left_attr, right_attr) in enumerate(sensitive_attrs):
+        if left_attr == right_attr and left_attr is not None:
+            group_indices[left_attr].append(i)
+
+    if len(group_indices) < 2:
+        return probs.sum() * 0.0
+
+    mean_probs = []
+    for group_name, indices in group_indices.items():
+        if len(indices) == 0:
+            continue
+        mean_probs.append(probs[indices].mean())
+
+    if len(mean_probs) < 2:
+        return probs.sum() * 0.0
+
+    mean_prob_tensor = torch.stack(mean_probs)
+    return mean_prob_tensor.max() - mean_prob_tensor.min()
+
+
 def evaluate_fairness_metrics(predictions: List[float], labels: List[int],
                               sensitive_attrs: List[Tuple[str, str]],
                               threshold: float = 0.5) -> Dict[str, float]:
@@ -506,13 +568,39 @@ def evaluate_fairness_metrics(predictions: List[float], labels: List[int],
     fair_threshold = 0.1  # Standard fairness threshold from Phase 1
     fair_groups = []
 
-    if len(ppvp_by_group) >= 2:
-        ppvp_values = list(ppvp_by_group.values())
-        avg_ppvp = sum(ppvp_values) / len(ppvp_values)
+    # Filter to only demographic groups (exclude "unknown" and "mixed")
+    demographic_ppvp = {g: v for g, v in ppvp_by_group.items() if g not in ["unknown", "mixed"]}
+    total_demographic_groups = len(demographic_ppvp)
 
-        for group_name, ppvp in ppvp_by_group.items():
-            if abs(ppvp - avg_ppvp) <= fair_threshold:
-                fair_groups.append(group_name)
+    if len(demographic_ppvp) >= 2:
+        ppvp_values = list(demographic_ppvp.values())
+        max_ppvp = max(ppvp_values)
+        min_ppvp = min(ppvp_values)
+        actual_disparity = max_ppvp - min_ppvp
+
+        # A group is "fair" only if the overall disparity is below threshold
+        # When disparity is below threshold, all groups are fair
+        # When disparity is above threshold, only the group(s) closest to the mean are fair
+        if actual_disparity <= fair_threshold:
+            fair_groups = list(demographic_ppvp.keys())
+        else:
+            avg_ppvp = sum(ppvp_values) / len(ppvp_values)
+            for group_name, ppvp in demographic_ppvp.items():
+                if abs(ppvp - avg_ppvp) <= fair_threshold / 2:
+                    fair_groups.append(group_name)
+
+    # Fairness rate: based on actual disparity vs threshold, not group counting
+    # This prevents the rate from being vacuously 1.0 when both groups have PPVP=0
+    if total_demographic_groups >= 2:
+        ppvp_vals = [v for g, v in ppvp_by_group.items() if g not in ["unknown", "mixed"]]
+        has_any_positive_preds = any(v > 0 for v in ppvp_vals)
+        if not has_any_positive_preds:
+            # Both groups have PPVP=0 → model makes no positive predictions → fairness is undefined
+            actual_fairness_rate = 0.0  # Not vacuously 1.0
+        else:
+            actual_fairness_rate = 1.0 if disparity <= fair_threshold else 0.0
+    else:
+        actual_fairness_rate = 0.0  # Can't assess fairness with <2 groups
 
     return {
         'ppvp_disparity': disparity,
@@ -520,7 +608,8 @@ def evaluate_fairness_metrics(predictions: List[float], labels: List[int],
         'group_counts': group_counts,
         'fair_groups': fair_groups,
         'num_fair_groups': len(fair_groups),
-        'total_groups': len([g for g in ppvp_by_group.keys() if g not in ["unknown", "mixed"]])
+        'total_groups': total_demographic_groups,
+        'fairness_rate': actual_fairness_rate
     }
 
 

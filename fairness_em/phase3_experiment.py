@@ -197,7 +197,8 @@ def run_single_alpha_experiment(alpha, config, run_id):
         'ppvp_disparity': result['fairness_metrics']['ppvp_disparity'],
         'num_fair_groups': result['fairness_metrics']['num_fair_groups'],
         'total_groups': result['fairness_metrics']['total_groups'],
-        'fairness_rate': result['fairness_metrics']['num_fair_groups'] / max(result['fairness_metrics']['total_groups'], 1),
+        'fairness_rate': result['fairness_metrics'].get('fairness_rate',
+            result['fairness_metrics']['num_fair_groups'] / max(result['fairness_metrics']['total_groups'], 1)),
         'model_path': result['model_path'],
         'run_tag': run_tag
     }

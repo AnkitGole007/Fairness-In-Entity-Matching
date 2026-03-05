@@ -37,7 +37,7 @@ from fairness_utils import (
 
 
 def fairness_aware_train_step(train_iter, model, optimizer, scheduler, hp,
-                               alpha_fairness=0.0, ema_tracker=None):
+                               alpha_fairness=0.0, ema_tracker=None, class_weights=None):
     """
     Perform fairness-aware training step with combined loss.
 
@@ -56,7 +56,7 @@ def fairness_aware_train_step(train_iter, model, optimizer, scheduler, hp,
     Returns:
         Dictionary with average losses for the epoch
     """
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     model.train()
 
     total_loss_sum = 0.0
@@ -300,6 +300,23 @@ def fairness_aware_train(trainset, validset, testset, run_tag, hp,
         ema_tracker = FairnessEMATracker(beta=ema_beta)
         print(f"EMA tracker initialized for fairness calculation")
 
+    # Compute class weights to handle class imbalance
+    # Uses sqrt-dampened inverse frequency to avoid extreme weight ratios
+    import math
+    num_pos = sum(1 for l in trainset.labels if l == 1)
+    num_neg = len(trainset.labels) - num_pos
+    if num_pos > 0 and num_neg > 0:
+        raw_pos = len(trainset.labels) / (2.0 * num_pos)
+        raw_neg = len(trainset.labels) / (2.0 * num_neg)
+        weight_pos = math.sqrt(raw_pos)
+        weight_neg = math.sqrt(raw_neg)
+        class_weights = torch.tensor([weight_neg, weight_pos], dtype=torch.float32, device=device)
+        print(f"Class weights (sqrt-dampened): neg={weight_neg:.4f}, pos={weight_pos:.4f} "
+              f"(raw_ratio={raw_pos/raw_neg:.1f}:1, dampened_ratio={weight_pos/weight_neg:.1f}:1, "
+              f"pos_rate={num_pos/len(trainset.labels):.4f})")
+    else:
+        class_weights = None
+
     # Training loop
     best_dev_f1 = 0.0
     best_test_f1 = 0.0
@@ -312,14 +329,15 @@ def fairness_aware_train(trainset, validset, testset, run_tag, hp,
         # Train
         epoch_losses = fairness_aware_train_step(
             train_iter, model, optimizer, scheduler, hp, alpha_fairness,
-            ema_tracker=ema_tracker
+            ema_tracker=ema_tracker, class_weights=class_weights
         )
 
         # Log EMA statistics if available
         if ema_tracker is not None:
             ema_stats = ema_tracker.get_stats()
             print(f"  EMA Stats: groups={ema_stats['groups_tracked']}, "
-                  f"disparity={ema_stats['disparity']:.4f}")
+                  f"dp_disparity={ema_stats['dp_disparity']:.4f}, "
+                  f"ppvp_disparity={ema_stats['ppvp_disparity']:.4f}")
 
         # Evaluate
         model.eval()
