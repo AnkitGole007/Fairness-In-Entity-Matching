@@ -212,7 +212,8 @@ def fairness_evaluate(model, iterator, threshold=None):
 
 
 def fairness_aware_train(trainset, validset, testset, run_tag, hp,
-                         alpha_fairness=0.0, use_ema=True, ema_beta=0.9):
+                         alpha_fairness=0.0, use_ema=True, ema_beta=0.9,
+                         checkpoint_dir=None):
     """
     Main fairness-aware training function.
 
@@ -360,8 +361,9 @@ def fairness_aware_train(trainset, validset, testset, run_tag, hp,
 
             # Save model checkpoint
             if hp.save_model:
-                os.makedirs(os.path.join(hp.logdir, 'Compas'), exist_ok=True)
-                ckpt_path = os.path.join(hp.logdir, 'Compas', f'model_alpha_{alpha_fairness:.2f}.pt')
+                ckpt_dir = checkpoint_dir if checkpoint_dir else os.path.join(hp.logdir, 'Compas')
+                os.makedirs(ckpt_dir, exist_ok=True)
+                ckpt_path = os.path.join(ckpt_dir, f'model_alpha_{alpha_fairness:.2f}.pt')
                 ckpt = {
                     'model': model.state_dict(),
                     'optimizer': optimizer.state_dict(),
@@ -399,7 +401,10 @@ def fairness_aware_train(trainset, validset, testset, run_tag, hp,
         'best_epoch': best_epoch,
         'fairness_metrics': best_fairness_metrics,
         'alpha': alpha_fairness,
-        'model_path': os.path.join(hp.logdir, 'Compas', f'model_alpha_{alpha_fairness:.2f}.pt')
+        'model_path': os.path.join(
+            checkpoint_dir if checkpoint_dir else os.path.join(hp.logdir, 'Compas'),
+            f'model_alpha_{alpha_fairness:.2f}.pt'
+        )
     }
 
     # Explicit cleanup to prevent memory leaks between experiments

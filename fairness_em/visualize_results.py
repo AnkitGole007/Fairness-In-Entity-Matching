@@ -10,7 +10,11 @@ Key Outputs:
 3. Comparison with Phase 1 baseline
 4. Statistical summary and recommendations
 
+Supports the run artifact contract: looks for results inside
+results/phase3/<run_id>/ folders.
+
 Usage:
+    python visualize_results.py [--run_dir path/to/run_folder]
     python visualize_results.py [--results_file path/to/results.csv]
 """
 
@@ -19,6 +23,8 @@ import sys
 import argparse
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend for safe file saves
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
@@ -31,14 +37,6 @@ sns.set_context("paper", font_scale=1.3)
 def plot_pareto_frontier(results_df, save_path=None, show_plot=True):
     """
     Generate the main Pareto frontier plot showing accuracy-fairness trade-off.
-
-    This is the primary visualization requested by the Professor showing how
-    accuracy and fairness metrics vary as alpha changes.
-
-    Args:
-        results_df: DataFrame with phase3 results
-        save_path: Path to save the plot (optional)
-        show_plot: Whether to display the plot interactively
     """
     fig, ax = plt.subplots(1, 1, figsize=(10, 7))
 
@@ -97,11 +95,6 @@ def plot_pareto_frontier(results_df, save_path=None, show_plot=True):
 def plot_alpha_sensitivity(results_df, save_path=None, show_plot=True):
     """
     Generate detailed alpha sensitivity analysis showing how each metric varies with alpha.
-
-    Args:
-        results_df: DataFrame with phase3 results
-        save_path: Path to save the plot (optional)
-        show_plot: Whether to display the plot interactively
     """
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.suptitle('Alpha Sensitivity Analysis', fontsize=16, fontweight='bold', y=0.995)
@@ -138,7 +131,8 @@ def plot_alpha_sensitivity(results_df, save_path=None, show_plot=True):
 
     # Plot 4: Training Time vs Alpha
     ax4 = axes[1, 1]
-    ax4.plot(results_df['alpha'], results_df['training_time_seconds'], 'mo-', linewidth=2, markersize=8)
+    if 'training_time_seconds' in results_df.columns:
+        ax4.plot(results_df['alpha'], results_df['training_time_seconds'], 'mo-', linewidth=2, markersize=8)
     ax4.set_xlabel('Alpha (α)', fontweight='bold')
     ax4.set_ylabel('Training Time (seconds)', fontweight='bold')
     ax4.set_title('Computational Cost vs Alpha', fontweight='bold')
@@ -158,41 +152,98 @@ def plot_alpha_sensitivity(results_df, save_path=None, show_plot=True):
     return fig
 
 
+def plot_loss_curves(results_df, save_path=None, show_plot=True):
+    """
+    Generate loss curves per alpha:
+    X axis = alpha value, Y axis = loss.
+    Shows two bars/lines: accuracy loss and fairness loss from final metrics.
+    
+    Note: For per-step loss curves, the training logs would need to be parsed.
+    This provides a summary view from the results CSV.
+    """
+    if 'ppvp_disparity' not in results_df.columns:
+        print("Skipping loss curves — no disparity data in results.")
+        return None
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+
+    alphas = results_df['alpha'].values
+    f1_scores = results_df['f1_score'].values
+    disparities = results_df['ppvp_disparity'].values
+
+    # Dual axis: F1 on left, disparity on right
+    color1 = '#2196F3'
+    color2 = '#FF5722'
+
+    ax.set_xlabel('Alpha (α)', fontsize=13, fontweight='bold')
+    ax.set_ylabel('F1 Score', color=color1, fontsize=13, fontweight='bold')
+    line1 = ax.plot(alphas, f1_scores, 'o-', color=color1, linewidth=2.5, markersize=10, label='F1 Score')
+    ax.tick_params(axis='y', labelcolor=color1)
+
+    ax2 = ax.twinx()
+    ax2.set_ylabel('PPVP Disparity', color=color2, fontsize=13, fontweight='bold')
+    line2 = ax2.plot(alphas, disparities, 's--', color=color2, linewidth=2.5, markersize=10, label='PPVP Disparity')
+    ax2.tick_params(axis='y', labelcolor=color2)
+
+    # Combined legend
+    lines = line1 + line2
+    labels = [l.get_label() for l in lines]
+    ax.legend(lines, labels, loc='center right', fontsize=11)
+
+    ax.set_title('Accuracy vs Fairness Trade-off by Alpha\n(F1 Score & PPVP Disparity)',
+                fontsize=14, fontweight='bold', pad=15)
+    ax.grid(True, alpha=0.2)
+
+    fig.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Loss/trade-off curve saved: {save_path}")
+
+    if show_plot:
+        plt.show()
+    else:
+        plt.close()
+
+    return fig
+
+
 def generate_statistical_summary(results_df, save_path=None):
     """
     Generate statistical analysis and summary table.
-
-    Args:
-        results_df: DataFrame with phase3 results
-        save_path: Path to save the summary (optional)
-
-    Returns:
-        Dictionary with key statistics
     """
     summary = {}
 
     # Baseline (α=0.0) stats
-    baseline = results_df[results_df['alpha'] == 0.0].iloc[0]
+    baseline_rows = results_df[results_df['alpha'] == 0.0]
+    if len(baseline_rows) == 0:
+        baseline_rows = results_df[results_df['alpha'] == results_df['alpha'].min()]
+    baseline = baseline_rows.iloc[0]
     summary['baseline_f1'] = baseline['f1_score']
     summary['baseline_disparity'] = baseline['ppvp_disparity']
 
-    # Best fairness (α=1.0) stats
+    # Best fairness stats
     best_fair = results_df[results_df['alpha'] == results_df['alpha'].max()].iloc[0]
     summary['best_fair_f1'] = best_fair['f1_score']
     summary['best_fair_disparity'] = best_fair['ppvp_disparity']
 
     # Improvement metrics
     summary['disparity_reduction'] = baseline['ppvp_disparity'] - best_fair['ppvp_disparity']
-    summary['disparity_reduction_pct'] = (summary['disparity_reduction'] / baseline['ppvp_disparity']) * 100
+    if baseline['ppvp_disparity'] > 0:
+        summary['disparity_reduction_pct'] = (summary['disparity_reduction'] / baseline['ppvp_disparity']) * 100
+    else:
+        summary['disparity_reduction_pct'] = 0.0
     summary['f1_cost'] = baseline['f1_score'] - best_fair['f1_score']
-    summary['f1_cost_pct'] = (summary['f1_cost'] / baseline['f1_score']) * 100
+    if baseline['f1_score'] > 0:
+        summary['f1_cost_pct'] = (summary['f1_cost'] / baseline['f1_score']) * 100
+    else:
+        summary['f1_cost_pct'] = 0.0
 
     # Correlation analysis
     summary['alpha_f1_correlation'] = results_df['alpha'].corr(results_df['f1_score'])
     summary['alpha_disparity_correlation'] = results_df['alpha'].corr(results_df['ppvp_disparity'])
 
-    # Optimal alpha (best trade-off): highest fairness_rate with minimal F1 loss
-    # Define "minimal F1 loss" as within 5% of baseline
+    # Optimal alpha (best trade-off)
     acceptable_f1 = baseline['f1_score'] * 0.95
     candidates = results_df[results_df['f1_score'] >= acceptable_f1]
 
@@ -209,11 +260,11 @@ def generate_statistical_summary(results_df, save_path=None):
     print("\n" + "="*80)
     print(" STATISTICAL SUMMARY")
     print("="*80)
-    print(f"\nBaseline (α=0.0):")
+    print(f"\nBaseline (α={baseline['alpha']:.1f}):")
     print(f"  F1 Score: {summary['baseline_f1']:.4f}")
     print(f"  PPVP Disparity: {summary['baseline_disparity']:.4f}")
 
-    print(f"\nPure Fairness (α={best_fair['alpha']:.1f}):")
+    print(f"\nHighest Alpha (α={best_fair['alpha']:.1f}):")
     print(f"  F1 Score: {summary['best_fair_f1']:.4f} (Δ: {summary['f1_cost']:.4f}, {summary['f1_cost_pct']:.1f}%)")
     print(f"  PPVP Disparity: {summary['best_fair_disparity']:.4f} (Δ: {summary['disparity_reduction']:.4f}, {summary['disparity_reduction_pct']:.1f}%)")
 
@@ -243,7 +294,7 @@ def create_comprehensive_report(results_df, output_dir):
 
     Args:
         results_df: DataFrame with phase3 results
-        output_dir: Directory to save all outputs
+        output_dir: Directory to save all outputs (typically run_dir/visuals/)
     """
     print("\n" + "="*80)
     print(" GENERATING COMPREHENSIVE REPORT")
@@ -262,12 +313,17 @@ def create_comprehensive_report(results_df, output_dir):
     sensitivity_path = output_dir / 'phase3_alpha_sensitivity.png'
     plot_alpha_sensitivity(results_df, save_path=sensitivity_path, show_plot=False)
 
-    # 3. Statistical Summary
+    # 3. Trade-off / Loss Curve
+    print("Generating trade-off curve...")
+    tradeoff_path = output_dir / 'phase3_tradeoff_curve.png'
+    plot_loss_curves(results_df, save_path=tradeoff_path, show_plot=False)
+
+    # 4. Statistical Summary
     print("Generating statistical summary...")
     summary_path = output_dir / 'phase3_statistical_summary.csv'
     summary = generate_statistical_summary(results_df, save_path=summary_path)
 
-    # 4. Detailed results table
+    # 5. Detailed results table
     detailed_path = output_dir / 'phase3_detailed_results.csv'
     results_df.to_csv(detailed_path, index=False)
     print(f"Detailed results saved: {detailed_path}")
@@ -277,41 +333,66 @@ def create_comprehensive_report(results_df, output_dir):
     print("="*80)
     print(f"\nAll outputs saved to: {output_dir}")
     print("\nGenerated files:")
-    print(f"  1. {pareto_path.name} - Main trade-off visualization")
-    print(f"  2. {sensitivity_path.name} - Alpha sensitivity analysis")
-    print(f"  3. {summary_path.name} - Statistical summary")
-    print(f"  4. {detailed_path.name} - Complete results table")
+    for f in sorted(output_dir.iterdir()):
+        print(f"  - {f.name}")
     print("="*80 + "\n")
+
+
+def find_latest_run_dir(base_dir):
+    """Find the most recent run folder under base_dir by sorting folder names."""
+    base = Path(base_dir)
+    if not base.exists():
+        return None
+    run_dirs = [d for d in base.iterdir() if d.is_dir() and d.name[0:4].isdigit()]
+    if not run_dirs:
+        return None
+    return sorted(run_dirs)[-1]
 
 
 def main():
     """Main entry point for visualization"""
     parser = argparse.ArgumentParser(description='Phase 3: Results Visualization')
 
-    parser.add_argument('--results_file', type=str,
-                       default=None,
-                       help='Path to phase3 results CSV file')
-    parser.add_argument('--output_dir', type=str,
-                       default=None,
-                       help='Directory to save visualizations')
+    parser.add_argument('--run_dir', type=str, default=None,
+                       help='Path to a specific run folder (e.g., results/phase3/2026-03-05_18-29-25-123)')
+    parser.add_argument('--results_file', type=str, default=None,
+                       help='Path to phase3 results CSV file (legacy mode)')
+    parser.add_argument('--output_dir', type=str, default=None,
+                       help='Directory to save visualizations (default: run_dir/visuals/)')
     parser.add_argument('--show_plots', action='store_true',
                        help='Display plots interactively')
 
     args = parser.parse_args()
 
-    # Determine results file path
-    if args.results_file:
+    # --- Determine results file and output directory ---
+    if args.run_dir:
+        run_dir = Path(args.run_dir)
+        results_path = run_dir / 'phase3_loss_curve_results.csv'
+        output_dir = run_dir / 'visuals'
+    elif args.results_file:
         results_path = Path(args.results_file)
+        output_dir = Path(args.output_dir) if args.output_dir else results_path.parent / 'visualizations'
     else:
-        # Default: look in results/phase3/
-        default_path = Path(__file__).parent / '..' / 'results' / 'phase3' / 'phase3_loss_curve_results.csv'
-        results_path = default_path
+        # Auto-detect: find the latest run folder
+        default_base = Path(__file__).parent / '..' / 'results' / 'phase3'
+        latest = find_latest_run_dir(default_base)
+        if latest and (latest / 'phase3_loss_curve_results.csv').exists():
+            results_path = latest / 'phase3_loss_curve_results.csv'
+            output_dir = latest / 'visuals'
+            print(f"Auto-detected latest run: {latest.name}")
+        else:
+            # Fallback to old flat layout
+            results_path = default_base / 'phase3_loss_curve_results.csv'
+            output_dir = default_base / 'visualizations'
+
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
 
     # Check if results file exists
     if not results_path.exists():
         print(f"[ERROR] Results file not found: {results_path}")
         print("\nPlease run phase3_experiment.py first to generate results,")
-        print("or specify the results file path with --results_file")
+        print("or specify the run directory with --run_dir")
         sys.exit(1)
 
     # Load results
@@ -319,17 +400,12 @@ def main():
     results_df = pd.read_csv(results_path)
     print(f"Loaded {len(results_df)} experimental results\n")
 
-    # Determine output directory
-    if args.output_dir:
-        output_dir = Path(args.output_dir)
-    else:
-        output_dir = results_path.parent / 'visualizations'
-
     # Generate comprehensive report
     create_comprehensive_report(results_df, output_dir)
 
     # Optionally show plots
     if args.show_plots:
+        matplotlib.use('TkAgg')
         print("\nDisplaying plots...")
         plot_pareto_frontier(results_df, show_plot=True)
         plot_alpha_sensitivity(results_df, show_plot=True)
