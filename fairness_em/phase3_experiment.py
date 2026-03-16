@@ -41,6 +41,32 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from fairness_dataset import FairnessDittoDataset
 from fairness_train import fairness_aware_train
+from visualize_results import run_analysis
+
+
+# ---------------------------------------------------------------------------
+# Logging Utilities
+# ---------------------------------------------------------------------------
+
+class TeeLogger:
+    """
+    Custom logger to redirect stdout/stderr to both the terminal and a file.
+    """
+    def __init__(self, file_path):
+        self.terminal = sys.stdout
+        self.log_file = open(file_path, 'a', encoding='utf-8')
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log_file.write(message)
+        self.log_file.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log_file.flush()
+
+    def close(self):
+        self.log_file.close()
 
 
 # ---------------------------------------------------------------------------
@@ -445,96 +471,115 @@ def run_loss_curve_exploration(config):
     command_used = ' '.join(sys.argv)
     start_time = time.time()
 
-    print("\n" + "="*80)
-    print(" PHASE 3: LOSS CURVE EXPLORATION")
-    print("="*80)
-    print(f"\n  Run ID: {run_id}")
-    print(f"  Run Folder: {paths['run_dir']}")
-    print(f"\nExperiment Configuration:")
-    print(f"  Task: {config.task}")
-    print(f"  Language Model: {config.lm}")
-    print(f"  Batch Size: {config.batch_size}")
-    print(f"  Epochs: {config.n_epochs}")
-    print(f"  Alpha Values: {config.alpha_values}")
-    print(f"  Dataset Size: {config.dataset_size if config.dataset_size else 'Full'}")
-    print(f"\nResults will be saved to: {paths['run_dir']}")
-    print("="*80 + "\n")
+    # Start capturing terminal output
+    terminal_log_path = os.path.join(paths['run_dir'], 'terminal_output.log')
+    logger = TeeLogger(terminal_log_path)
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    sys.stdout = logger
+    sys.stderr = logger
 
-    # Save configuration
-    config_dict = config.to_dict()
-    config_dict['run_id'] = run_id
-    config_dict['commit_hash'] = get_git_commit_hash()
-    config_dict['command'] = command_used
+    try:
+        print("\n" + "="*80)
+        print(" PHASE 3: LOSS CURVE EXPLORATION")
+        print("="*80)
+        print(f"\n  Run ID: {run_id}")
+        print(f"  Run Folder: {paths['run_dir']}")
+        print(f"\nExperiment Configuration:")
+        print(f"  Task: {config.task}")
+        print(f"  Language Model: {config.lm}")
+        print(f"  Batch Size: {config.batch_size}")
+        print(f"  Epochs: {config.n_epochs}")
+        print(f"  Alpha Values: {config.alpha_values}")
+        print(f"  Dataset Size: {config.dataset_size if config.dataset_size else 'Full'}")
+        print(f"\nResults will be saved to: {paths['run_dir']}")
+        print("="*80 + "\n")
 
-    tmp_cfg = paths['config_file'] + '.tmp'
-    with open(tmp_cfg, 'w') as f:
-        json.dump(config_dict, f, indent=2)
-    os.replace(tmp_cfg, paths['config_file'])
-    print(f"Configuration saved: {paths['config_file']}\n")
+        # Save configuration
+        config_dict = config.to_dict()
+        config_dict['run_id'] = run_id
+        config_dict['commit_hash'] = get_git_commit_hash()
+        config_dict['command'] = command_used
 
-    # Run experiments for each alpha value
-    results = []
+        tmp_cfg = paths['config_file'] + '.tmp'
+        with open(tmp_cfg, 'w') as f:
+            json.dump(config_dict, f, indent=2)
+        os.replace(tmp_cfg, paths['config_file'])
+        print(f"Configuration saved: {paths['config_file']}\n")
 
-    for idx, alpha in enumerate(config.alpha_values, 1):
-        print(f"\n{'*'*80}")
-        print(f"* PROGRESS: {idx}/{len(config.alpha_values)} - alpha = {alpha}")
-        print(f"{'*'*80}")
+        # Run experiments for each alpha value
+        results = []
 
-        try:
-            result = run_single_alpha_experiment(
-                alpha, config, config.run_id, paths['checkpoints_dir']
-            )
-            results.append(result)
+        for idx, alpha in enumerate(config.alpha_values, 1):
+            print(f"\n{'*'*80}")
+            print(f"* PROGRESS: {idx}/{len(config.alpha_values)} - alpha = {alpha}")
+            print(f"{'*'*80}")
 
-            # Save intermediate results after each experiment (atomic write)
-            intermediate_df = pd.DataFrame(results)
-            tmp_csv = paths['intermediate_csv'] + '.tmp'
-            intermediate_df.to_csv(tmp_csv, index=False)
-            os.replace(tmp_csv, paths['intermediate_csv'])
-            print(f"Intermediate results saved: {paths['intermediate_csv']}")
+            try:
+                result = run_single_alpha_experiment(
+                    alpha, config, config.run_id, paths['checkpoints_dir']
+                )
+                results.append(result)
 
-        except Exception as e:
-            print(f"\n[ERROR] Experiment failed for alpha = {alpha}: {e}")
-            import traceback
-            traceback.print_exc()
-            continue
+                # Save intermediate results after each experiment (atomic write)
+                intermediate_df = pd.DataFrame(results)
+                tmp_csv = paths['intermediate_csv'] + '.tmp'
+                intermediate_df.to_csv(tmp_csv, index=False)
+                os.replace(tmp_csv, paths['intermediate_csv'])
+                print(f"Intermediate results saved: {paths['intermediate_csv']}")
 
-        finally:
-            # Clean up GPU memory between experiments
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            gc.collect()
+            except Exception as e:
+                print(f"\n[ERROR] Experiment failed for alpha = {alpha}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
 
-    end_time = time.time()
+            finally:
+                # Clean up GPU memory between experiments
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
 
-    # Convert to DataFrame and save final results
-    if not results:
-        print("\n[ERROR] No experiments completed successfully!")
+        end_time = time.time()
+
+        # Convert to DataFrame and save final results
+        if not results:
+            print("\n[ERROR] No experiments completed successfully!")
+            write_training_log(paths, config, run_id, results, command_used, start_time, end_time)
+            return None
+
+        results_df = pd.DataFrame(results)
+
+        # Sort by alpha for clarity
+        results_df = results_df.sort_values('alpha').reset_index(drop=True)
+
+        # Save comprehensive results (atomic write)
+        tmp_csv = paths['results_csv'] + '.tmp'
+        results_df.to_csv(tmp_csv, index=False)
+        os.replace(tmp_csv, paths['results_csv'])
+
+        print("\n" + "="*80)
+        print(" PHASE 3 EXPERIMENT COMPLETE!")
+        print("="*80)
+        print(f"\n  Run ID: {run_id}")
+        print(f"  Run Folder: {paths['run_dir']}")
+        print(f"\nFinal Results Summary:")
+        print(results_df[['alpha', 'f1_score', 'ppvp_disparity', 'fairness_rate']].to_string(index=False))
+        print(f"\nResults saved to: {paths['results_csv']}")
+        print("="*80 + "\n")
+
+        # Write training log
         write_training_log(paths, config, run_id, results, command_used, start_time, end_time)
-        return None
 
-    results_df = pd.DataFrame(results)
+        # Automatically generate visualizations
+        print("\nGenerating visualizations...")
+        run_analysis(run_dir=paths['run_dir'])
 
-    # Sort by alpha for clarity
-    results_df = results_df.sort_values('alpha').reset_index(drop=True)
-
-    # Save comprehensive results (atomic write)
-    tmp_csv = paths['results_csv'] + '.tmp'
-    results_df.to_csv(tmp_csv, index=False)
-    os.replace(tmp_csv, paths['results_csv'])
-
-    print("\n" + "="*80)
-    print(" PHASE 3 EXPERIMENT COMPLETE!")
-    print("="*80)
-    print(f"\n  Run ID: {run_id}")
-    print(f"  Run Folder: {paths['run_dir']}")
-    print(f"\nFinal Results Summary:")
-    print(results_df[['alpha', 'f1_score', 'ppvp_disparity', 'fairness_rate']].to_string(index=False))
-    print(f"\nResults saved to: {paths['results_csv']}")
-    print("="*80 + "\n")
-
-    # Write training log
-    write_training_log(paths, config, run_id, results, command_used, start_time, end_time)
+    finally:
+        # Reset terminal output and close logger
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        logger.close()
 
     return results_df
 

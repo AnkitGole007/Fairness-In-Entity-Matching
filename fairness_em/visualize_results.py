@@ -349,8 +349,59 @@ def find_latest_run_dir(base_dir):
     return sorted(run_dirs)[-1]
 
 
+def run_analysis(run_dir=None, results_file=None, output_dir=None, show_plots=False):
+    """
+    Main entry point for visualization.
+    """
+    # --- Determine results file and output directory ---
+    if run_dir:
+        run_dir_path = Path(run_dir)
+        results_path = run_dir_path / 'phase3_loss_curve_results.csv'
+        output_dir_path = Path(output_dir) if output_dir else run_dir_path / 'visuals'
+    elif results_file:
+        results_path = Path(results_file)
+        if output_dir:
+            output_dir_path = Path(output_dir)
+        else:
+            output_dir_path = results_path.parent / 'visualizations'
+    else:
+        # Auto-detect: find the latest run folder
+        default_base = Path(__file__).parent / '..' / 'results' / 'phase3'
+        latest = find_latest_run_dir(default_base)
+        if latest and (latest / 'phase3_loss_curve_results.csv').exists():
+            results_path = latest / 'phase3_loss_curve_results.csv'
+            output_dir_path = latest / 'visuals'
+            print(f"Auto-detected latest run: {latest.name}")
+        else:
+            # Fallback to old flat layout
+            results_path = default_base / 'phase3_loss_curve_results.csv'
+            output_dir_path = Path(output_dir) if output_dir else default_base / 'visualizations'
+
+    # Check if results file exists
+    if not results_path.exists():
+        print(f"[ERROR] Results file not found: {results_path}")
+        return False
+
+    # Load results
+    print(f"Loading results from: {results_path}")
+    results_df = pd.read_csv(results_path)
+    print(f"Loaded {len(results_df)} experimental results\n")
+
+    # Generate comprehensive report
+    create_comprehensive_report(results_df, output_dir_path)
+
+    # Optionally show plots
+    if show_plots:
+        matplotlib.use('TkAgg')
+        print("\nDisplaying plots...")
+        plot_pareto_frontier(results_df, show_plot=True)
+        plot_alpha_sensitivity(results_df, show_plot=True)
+
+    return True
+
+
 def main():
-    """Main entry point for visualization"""
+    """Main entry point for visualization CLI"""
     parser = argparse.ArgumentParser(description='Phase 3: Results Visualization')
 
     parser.add_argument('--run_dir', type=str, default=None,
@@ -364,51 +415,12 @@ def main():
 
     args = parser.parse_args()
 
-    # --- Determine results file and output directory ---
-    if args.run_dir:
-        run_dir = Path(args.run_dir)
-        results_path = run_dir / 'phase3_loss_curve_results.csv'
-        output_dir = run_dir / 'visuals'
-    elif args.results_file:
-        results_path = Path(args.results_file)
-        output_dir = Path(args.output_dir) if args.output_dir else results_path.parent / 'visualizations'
-    else:
-        # Auto-detect: find the latest run folder
-        default_base = Path(__file__).parent / '..' / 'results' / 'phase3'
-        latest = find_latest_run_dir(default_base)
-        if latest and (latest / 'phase3_loss_curve_results.csv').exists():
-            results_path = latest / 'phase3_loss_curve_results.csv'
-            output_dir = latest / 'visuals'
-            print(f"Auto-detected latest run: {latest.name}")
-        else:
-            # Fallback to old flat layout
-            results_path = default_base / 'phase3_loss_curve_results.csv'
-            output_dir = default_base / 'visualizations'
-
-    if args.output_dir:
-        output_dir = Path(args.output_dir)
-
-    # Check if results file exists
-    if not results_path.exists():
-        print(f"[ERROR] Results file not found: {results_path}")
-        print("\nPlease run phase3_experiment.py first to generate results,")
-        print("or specify the run directory with --run_dir")
-        sys.exit(1)
-
-    # Load results
-    print(f"Loading results from: {results_path}")
-    results_df = pd.read_csv(results_path)
-    print(f"Loaded {len(results_df)} experimental results\n")
-
-    # Generate comprehensive report
-    create_comprehensive_report(results_df, output_dir)
-
-    # Optionally show plots
-    if args.show_plots:
-        matplotlib.use('TkAgg')
-        print("\nDisplaying plots...")
-        plot_pareto_frontier(results_df, show_plot=True)
-        plot_alpha_sensitivity(results_df, show_plot=True)
+    run_analysis(
+        run_dir=args.run_dir,
+        results_file=args.results_file,
+        output_dir=args.output_dir,
+        show_plots=args.show_plots
+    )
 
 
 if __name__ == "__main__":
