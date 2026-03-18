@@ -3,6 +3,7 @@ Documents/
 .env
 .claude/
 .vscode/
+results/
 
 # Ditto repository - Large datasets and data files
 ditto/data/
