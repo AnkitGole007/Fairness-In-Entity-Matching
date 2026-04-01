@@ -48,3 +48,6 @@ logs/
 **/*.tmp
 **/*.temp
 **/*.log
+
+# Turing Scripts
+*.sh
