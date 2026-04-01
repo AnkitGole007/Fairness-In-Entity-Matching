@@ -213,7 +213,7 @@ def fairness_evaluate(model, iterator, threshold=None):
 
 def fairness_aware_train(trainset, validset, testset, run_tag, hp,
                          alpha_fairness=0.0, use_ema=True, ema_beta=0.9,
-                         checkpoint_dir=None):
+                         checkpoint_dir=None, weight_method='sqrt'):
     """
     Main fairness-aware training function.
 
@@ -302,18 +302,25 @@ def fairness_aware_train(trainset, validset, testset, run_tag, hp,
         print(f"EMA tracker initialized for fairness calculation")
 
     # Compute class weights to handle class imbalance
-    # Uses sqrt-dampened inverse frequency to avoid extreme weight ratios
     import math
     num_pos = sum(1 for l in trainset.labels if l == 1)
     num_neg = len(trainset.labels) - num_pos
     if num_pos > 0 and num_neg > 0:
         raw_pos = len(trainset.labels) / (2.0 * num_pos)
         raw_neg = len(trainset.labels) / (2.0 * num_neg)
-        weight_pos = math.sqrt(raw_pos)
-        weight_neg = math.sqrt(raw_neg)
+        
+        if weight_method == 'sqrt':
+            weight_pos = math.sqrt(raw_pos)
+            weight_neg = math.sqrt(raw_neg)
+            method_name = "sqrt-dampened"
+        else:
+            weight_pos = raw_pos
+            weight_neg = raw_neg
+            method_name = "normal"
+            
         class_weights = torch.tensor([weight_neg, weight_pos], dtype=torch.float32, device=device)
-        print(f"Class weights (sqrt-dampened): neg={weight_neg:.4f}, pos={weight_pos:.4f} "
-              f"(raw_ratio={raw_pos/raw_neg:.1f}:1, dampened_ratio={weight_pos/weight_neg:.1f}:1, "
+        print(f"Class weights ({method_name}): neg={weight_neg:.4f}, pos={weight_pos:.4f} "
+              f"(raw_ratio={raw_pos/raw_neg:.1f}:1, current_ratio={weight_pos/weight_neg:.1f}:1, "
               f"pos_rate={num_pos/len(trainset.labels):.4f})")
     else:
         class_weights = None

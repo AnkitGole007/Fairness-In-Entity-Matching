@@ -195,7 +195,7 @@ def write_training_log(paths, config, run_id, results, command_used, start_time,
     lines.append(f"| **Max Length** | {config.max_len} |")
     lines.append(f"| **Dataset Size** | {'Full' if config.dataset_size is None else config.dataset_size} |")
     lines.append(f"| **Dataset** | {config.task} |")
-    lines.append(f"| **Weight Method** | sqrt-dampened inverse frequency |")
+    lines.append(f"| **Weight Method** | {config.weight_method} |")
     lines.append(f"| **FP16** | {config.fp16} |")
     lines.append("")
 
@@ -281,6 +281,7 @@ class ExperimentConfig:
         self.batch_size = 64 if args is None else args.batch_size
         self.lr = 3e-5
         self.n_epochs = 20 if args is None else args.n_epochs
+        self.weight_method = 'sqrt' if args is None else args.weight_method
         self.run_id = 0
 
         # Experiment configuration
@@ -311,7 +312,8 @@ class ExperimentConfig:
             'lr': self.lr,
             'n_epochs': self.n_epochs,
             'alpha_values': self.alpha_values,
-            'dataset_size': self.dataset_size
+            'dataset_size': self.dataset_size,
+            'weight_method': self.weight_method
         }
 
 
@@ -405,7 +407,8 @@ def run_single_alpha_experiment(alpha, config, run_id, checkpoint_dir):
         alpha_fairness=alpha,
         use_ema=True,
         ema_beta=0.9,
-        checkpoint_dir=checkpoint_dir
+        checkpoint_dir=checkpoint_dir,
+        weight_method=config.weight_method
     )
     training_time = (datetime.now() - start_time).total_seconds()
 
@@ -596,6 +599,8 @@ def main():
                        help='Batch size (default: 64)')
     parser.add_argument('--dataset_size', type=int, default=None,
                        help='Limit dataset size for quick testing (default: None = full dataset)')
+    parser.add_argument('--weight_method', type=str, choices=['normal', 'sqrt'], default='sqrt',
+                       help='Weight method for class imbalance: normal (inverse frequency) or sqrt (dampened). Default: sqrt')
 
     args = parser.parse_args()
 
