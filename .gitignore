@@ -32,12 +32,11 @@ logs/
 **/runs/
 
 # Large data files
-**/*.txt
-!ditto/README.md
-!ditto/requirements.txt
-**/*.csv
-**/*.tsv
-**/*.jsonl
+ditto/README.md
+ditto/**/*.txt
+ditto/**/*.csv
+ditto/**/*.tsv
+ditto/**/*.jsonl
 
 # Jupyter Notebook
 **/.ipynb_checkpoints
