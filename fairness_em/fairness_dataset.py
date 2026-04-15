@@ -41,7 +41,9 @@ class FairnessDittoDataset(DittoDataset):
                  size: Optional[int] = None,
                  lm: str = 'roberta',
                  da: Optional[str] = None,
-                 sensitive_attribute: str = 'Ethnic_Code_Text'):
+                 sensitive_attribute: str = 'Ethnic_Code_Text',
+                 genre_grouping: bool = False,
+                 genre_map: Optional[dict] = None):
         """
         Initialize FairnessDittoDataset.
 
@@ -52,12 +54,16 @@ class FairnessDittoDataset(DittoDataset):
             lm: Language model name ('roberta', 'distilbert', etc.)
             da: Data augmentation type (None, 'del', 'swap', etc.)
             sensitive_attribute: Name of the sensitive attribute to extract
+            genre_grouping: Whether to apply genre grouping (for iTunes-Amazon)
+            genre_map: Optional pre-computed mapping for genre grouping
         """
         # Initialize parent DittoDataset
         super().__init__(path, max_len, size, lm, da)
 
         # Store sensitive attribute configuration
         self.sensitive_attribute = sensitive_attribute
+        self.genre_grouping = genre_grouping
+        self.genre_map = genre_map
         self.sensitive_attrs = []
 
         # Extract sensitive attributes from all pairs
@@ -68,25 +74,53 @@ class FairnessDittoDataset(DittoDataset):
         Extract sensitive attributes from stored entity pairs.
 
         Process:
-        1. For each (left, right) pair in self.pairs
-        2. Extract sensitive attribute from both entities
+        1. For each (left, right) pair in self.pairs, extract raw attributes.
+        2. If genre_grouping is enabled, apply keyword-based broad categorization.
         3. Store as tuple: (left_attr, right_attr)
-
-        Note:
-            If extraction fails, stores (None, None) to maintain alignment
         """
         for left_text, right_text in self.pairs:
-            # Extract sensitive attributes from both entities
             left_attr, right_attr = extract_sensitive_attributes_from_pair(
-                left_text,
-                right_text,
-                self.sensitive_attribute
+                left_text, right_text, self.sensitive_attribute
             )
+
+            # Apply grouping if enabled
+            if self.genre_grouping:
+                left_attr = self._group_genre(left_attr)
+                right_attr = self._group_genre(right_attr)
+
             self.sensitive_attrs.append((left_attr, right_attr))
 
         # Verify alignment
         assert len(self.sensitive_attrs) == len(self.pairs), \
             "Sensitive attributes list must match pairs list"
+
+    def _group_genre(self, attr: Optional[str]) -> Optional[str]:
+        """
+        Map genre to a broad semantic category using keyword matching.
+        This provides a more stable grouping than exact top-K frequency.
+        """
+        if attr is None:
+            return None
+        
+        attr_lower = attr.lower()
+        
+        # Priority mapping for broad groups
+        if 'rock' in attr_lower:
+            return 'Rock'
+        if 'pop' in attr_lower:
+            return 'Pop'
+        if 'country' in attr_lower:
+            return 'Country'
+        if any(kw in attr_lower for kw in ['dance', 'electronic', 'electronica', 'house', 'techno']):
+            return 'Dance/Electronic'
+        if any(kw in attr_lower for kw in ['hip-hop', 'rap']):
+            return 'Hip-Hop/Rap'
+        if any(kw in attr_lower for kw in ['r&b', 'soul']):
+            return 'R&B/Soul'
+        if 'soundtrack' in attr_lower:
+            return 'Soundtrack'
+        
+        return 'Other'
 
     def __getitem__(self, idx: int):
         """

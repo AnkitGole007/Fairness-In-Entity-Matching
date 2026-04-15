@@ -255,6 +255,21 @@ def write_training_log(paths, config, run_id, results, command_used, start_time,
 # Experiment config
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Dataset configuration
+# ---------------------------------------------------------------------------
+
+DATASET_CONFIG = {
+    "Compas": {
+        "sensitive_attribute": "Ethnic_Code_Text",
+        "genre_grouping": False,
+    },
+    "iTunes-Amazon": {
+        "sensitive_attribute": "Genre",
+        "genre_grouping": True,
+    }
+}
+
 class ExperimentConfig:
     """Configuration management for Phase 3 experiments"""
 
@@ -265,9 +280,16 @@ class ExperimentConfig:
         Args:
             args: Argument namespace from argparse (optional)
         """
-        # Dataset configuration
-        self.task = "Compas"
-        self.data_dir = os.path.join(os.path.dirname(__file__), '..', 'ditto', 'data', 'Compas')
+        # Dataset selection
+        self.dataset_name = args.dataset if args is not None and hasattr(args, 'dataset') else "Compas"
+        self.task = self.dataset_name
+        self.dataset_cfg = DATASET_CONFIG.get(self.dataset_name, DATASET_CONFIG["Compas"])
+        
+        self.sensitive_attribute = self.dataset_cfg["sensitive_attribute"]
+        self.genre_grouping = self.dataset_cfg["genre_grouping"]
+
+        # Paths
+        self.data_dir = os.path.join(os.path.dirname(__file__), '..', 'ditto', 'data', self.dataset_name)
         self.trainset_path = os.path.join(self.data_dir, 'train.txt')
         self.validset_path = os.path.join(self.data_dir, 'valid.txt')
         self.testset_path = os.path.join(self.data_dir, 'test.txt')
@@ -306,6 +328,9 @@ class ExperimentConfig:
         """Convert config to dictionary for saving"""
         return {
             'task': self.task,
+            'dataset': self.dataset_name,
+            'sensitive_attribute': self.sensitive_attribute,
+            'genre_grouping': self.genre_grouping,
             'lm': self.lm,
             'max_len': self.max_len,
             'batch_size': self.batch_size,
@@ -348,22 +373,29 @@ def run_single_alpha_experiment(alpha, config, run_id, checkpoint_dir):
     set_seed(run_id)
 
     # Load datasets with FairnessDittoDataset
-    print("Loading datasets...")
+    print(f"Loading datasets for {config.task}...")
     train_dataset = FairnessDittoDataset(
         config.trainset_path,
         lm=config.lm,
         max_len=config.max_len,
-        size=config.dataset_size
+        size=config.dataset_size,
+        sensitive_attribute=config.sensitive_attribute,
+        genre_grouping=config.genre_grouping
     )
+    
     valid_dataset = FairnessDittoDataset(
         config.validset_path,
         lm=config.lm,
-        max_len=config.max_len
+        max_len=config.max_len,
+        sensitive_attribute=config.sensitive_attribute,
+        genre_grouping=config.genre_grouping
     )
     test_dataset = FairnessDittoDataset(
         config.testset_path,
         lm=config.lm,
-        max_len=config.max_len
+        max_len=config.max_len,
+        sensitive_attribute=config.sensitive_attribute,
+        genre_grouping=config.genre_grouping
     )
 
     print(f"  Train: {len(train_dataset)} samples")
@@ -378,7 +410,7 @@ def run_single_alpha_experiment(alpha, config, run_id, checkpoint_dir):
     print(f"  Distribution: {train_stats['group_distribution']}")
 
     # Create run tag
-    run_tag = f"Compas_alpha_{alpha:.2f}_id{run_id}"
+    run_tag = f"{config.task}_alpha_{alpha:.2f}_id{run_id}"
 
     # Create hyperparameters namespace (matching Ditto's format)
     class HP:
@@ -591,6 +623,9 @@ def main():
     """Main entry point for Phase 3 experiments"""
     parser = argparse.ArgumentParser(description='Phase 3: Loss Curve Exploration')
 
+    parser.add_argument('--dataset', type=str, default='Compas',
+                       choices=['Compas', 'iTunes-Amazon'],
+                       help='Dataset to use (default: Compas)')
     parser.add_argument('--alpha_values', type=float, nargs='+',
                        help='Alpha values to test (default: 0.0 0.5 1.0)')
     parser.add_argument('--epochs', dest='n_epochs', type=int, default=20,
